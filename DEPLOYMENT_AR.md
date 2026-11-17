@@ -30,6 +30,11 @@
 | `SMTP_USERNAME` | حساب SMTP |
 | `SMTP_PASSWORD` | كلمة مرور أو App Password |
 | `SMTP_FROM` | عنوان البريد المرسل |
+| `LICENSE_SERIAL_ENCRYPTION_KEY` | مفتاح Fernet لتشفير أرقام التراخيص المخزنة |
+| `CHARGILY_API_SECRET_KEY` | مفتاح Chargily السري لوضع الاختبار أولاً |
+| `CHARGILY_MODE` | `test` حالياً؛ لا تغيّره إلى `live` قبل موافقة Chargily |
+| `WARAKA_PRICE_DZD` | سعر الرخصة بالدينار؛ يبقى 0 إلى حين اعتماد السعر |
+| `PUBLIC_BASE_URL` | عنوان HTTPS الفعلي لخدمة Render |
 
 المتغيران `OFFLINE_GRACE_DAYS` و`RECHECK_DAYS` مضبوطان افتراضياً على 14 و7 أيام في ملف Render.
 
@@ -42,6 +47,14 @@ python scripts/generate_keys.py
 ```
 
 ضع `LICENSE_PRIVATE_KEY_B64` في Render فقط. سيُستخدم المفتاح العام لاحقاً داخل تطبيق Windows، ويمكن وضع نسخته في Render للتحقق من تطابق المفتاحين. لا ترفع أيّاً منهما إلى GitHub، ولا ترسلهما في المحادثة.
+
+ولإنشاء مفتاح تشفير أرقام التراخيص التي تُحفظ مؤقتاً لإعادة إرسالها بأمان عند فشل البريد:
+
+```bash
+python scripts/generate_serial_encryption_key.py
+```
+
+ضع الناتج `LICENSE_SERIAL_ENCRYPTION_KEY` في Render secrets فقط. لا تغيّره بعد بدء إصدار التراخيص، وإلا لن يمكن فك تشفير الأرقام القديمة لإعادة إرسالها.
 
 ولإنشاء سرّي الإدارة وOTP محلياً باستخدام Python:
 
@@ -62,13 +75,27 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 تُطبّق ترحيلات قاعدة البيانات تلقائياً قبل تشغيل الخادم. إذا فشل النشر، راجع Render Logs ولا تشارك أي قيمة سرية عند طلب المساعدة.
 
-## 5. ما لا يزال يتطلب إعداداً منفصلاً
+## 5. تهيئة Chargily Pay للاختبار
 
-- حساب SMTP فعّال لإرسال رموز OTP.
+1. أنشئ حساباً في لوحة Chargily Pay، ثم أنشئ تطبيقاً من Developers Corner.
+2. ابدأ في Test Mode وخذ مفتاح API السري الخاص بالاختبار.
+3. ضع المفتاح في `CHARGILY_API_SECRET_KEY`، واجعل `CHARGILY_MODE=test`.
+4. حدّد السعر بعد اعتماده، ثم غيّر `WARAKA_PRICE_DZD` إلى مبلغ صحيح بالدينار.
+5. ضع عنوان خدمة Render الفعلي في `PUBLIC_BASE_URL`. عنوان Webhook الذي يجب إدخاله في لوحة Chargily هو:
+   `https://YOUR-RENDER-SERVICE.onrender.com/v1/payments/chargily/webhook`
+6. نفّذ عملية اختبار كاملة وتأكد من وصول Webhook وتوليد الرخصة والبريد.
+
+لا تنتقل إلى Live Mode قبل اعتماد حساب التاجر والتطبيق من Chargily. يتطلب الدفع الحقيقي التحقق من حساب المستخدم ثم التحقق من التطبيق. راجع إعدادات Chargily الرسمية قبل التبديل.
+
+## 6. ما لا يزال يتطلب إعداداً منفصلاً
+
+- حساب SMTP فعّال لإرسال رموز OTP ورخص الشراء.
+- إنشاء مشروع Neon وربطه بخدمة Render.
+- تهيئة مفاتيح التوقيع والتشفير السرية في Render.
+- تفعيل حساب وتطبيق Chargily للحصول على مفاتيح Live.
 - ربط تطبيق Windows بعنوان API الحي والمفتاح العام.
 - اختبار التفعيل، والتحقق الدوري، وفترة العمل دون اتصال.
-- حساب تاجر Chargily Pay ومفاتيح API وتفعيل الحساب قبل تشغيل الدفع المحلي.
-- تكامل دولي مستقل عندما تصبح Visa وMastercard متاحتين فعلياً لحساب التاجر.
+- تكامل دولي مستقل عندما تصبح وسائل Visa وMastercard متاحة فعلياً لحساب التاجر.
 
 ## ملاحظات حول نموذج البيع
 
