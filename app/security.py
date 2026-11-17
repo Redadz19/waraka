@@ -39,4 +39,9 @@ def sign_payload(payload: bytes) -> str:
 
 def public_key_b64() -> str:
     raw = _private_key().public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    if settings.license_public_key_b64:
+        configured = base64.b64decode(settings.license_public_key_b64, validate=True)
+        if len(configured) != 32 or not hmac.compare_digest(raw, configured):
+            raise RuntimeError("LICENSE_PUBLIC_KEY_B64 does not match LICENSE_PRIVATE_KEY_B64")
+        raw = configured
     return base64.b64encode(raw).decode("ascii")
