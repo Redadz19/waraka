@@ -16,6 +16,7 @@ from app.config import settings
 from app.database import Base
 from app.models import License, Payment, PaymentWebhookEvent
 from app.schemas import PaymentCheckoutRequest
+from app.security import decrypt_license_serial, encrypt_license_serial
 
 
 @pytest.fixture
@@ -167,6 +168,7 @@ def test_signed_paid_webhook_issues_one_lifetime_license_and_deduplicates(paymen
     assert stored_payment.status == "paid"
     assert stored_payment.license_id is not None
     assert stored_payment.license_email_sent_at is not None
+    assert decrypt_license_serial(stored_payment.license_serial_ciphertext) == sent[0][1]
     license_record = payment_db.get(License, stored_payment.license_id)
     assert license_record is not None
     assert license_record.expires_at is None
@@ -220,3 +222,57 @@ def test_webhook_rejects_amount_mismatch_without_issuing_license(payment_db, mon
 
     assert error.value.status_code == 400
     assert payment_db.scalar(select(func.count()).select_from(License)) == 0
+
+
+
+def test_admin_can_retry_license_email_after_smtp_failure(payment_db, monkeypatch):
+    configure_payment_settings(monkeypatch)
+    monkeypatch.setattr(settings, "admin_api_key", "admin-test-secret")
+    serial = "WRK-AAAA-BBBB-CCCC-DDDD"
+    license_record = License(
+        serial_hash=main.hash_serial(serial),
+        email="buyer@example.com",
+        active=True,
+        expires_at=None,
+    )
+    payment = Payment(
+        provider="chargily",
+        provider_reference="chargily-checkout-email-retry",
+        idempotency_key="c" * 64,
+        customer_email="buyer@example.com",
+        amount_dzd=2400,
+        currency="DZD",
+        status="paid",
+        license_serial_ciphertext=encrypt_license_serial(serial),
+        license_email_attempts=0,
+    )
+    payment_db.add(license_record)
+    payment_db.flush()
+    payment.license_id = license_record.id
+    payment_db.add(payment)
+    payment_db.commit()
+
+    calls = []
+
+    def flaky_send(email, value):
+        calls.append((email, value))
+        if len(calls) == 1:
+            raise RuntimeError("temporary SMTP outage")
+
+    monkeypatch.setattr(main, "send_license", flaky_send)
+
+    with pytest.raises(HTTPException) as first_error:
+        main.resend_license_email(payment.id, "admin-test-secret", payment_db)
+    assert first_error.value.status_code == 503
+    assert payment.license_email_sent_at is None
+    assert payment.license_email_attempts == 1
+
+    result = main.resend_license_email(payment.id, "admin-test-secret", payment_db)
+
+    assert result["sent"] is True
+    assert payment.license_email_sent_at is not None
+    assert payment.license_email_attempts == 2
+    assert calls == [
+        ("buyer@example.com", serial),
+        ("buyer@example.com", serial),
+    ]
