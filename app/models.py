@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -45,3 +45,31 @@ class EmailOTP(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     consumed: Mapped[bool] = mapped_column(Boolean, default=False)
     license: Mapped["License"] = relationship(back_populates="otp_codes")
+
+
+
+class Payment(Base):
+    """One-off purchase ledger; a paid transaction can issue at most one license."""
+    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_reference", name="uq_payment_provider_reference"),
+        UniqueConstraint("license_id", name="uq_payment_license"),
+        CheckConstraint(
+            "status IN ('pending', 'paid', 'failed', 'refunded')",
+            name="ck_payment_status",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    customer_email: Mapped[str] = mapped_column(String(320), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, index=True)
+    checkout_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    license_id: Mapped[str | None] = mapped_column(ForeignKey("licenses.id"), nullable=True)
+    provider_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
