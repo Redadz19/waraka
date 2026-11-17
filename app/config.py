@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     app_name: str = "WARAKA Licensing API"
     environment: str = "development"
@@ -7,6 +8,7 @@ class Settings(BaseSettings):
     license_private_key_b64: str = ""
     license_public_key_b64: str = ""
     admin_api_key: str = ""
+    otp_secret: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
@@ -18,5 +20,6 @@ class Settings(BaseSettings):
     max_devices_per_license: int = 3
     cors_origins: str = "*"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
 
 settings = Settings()
