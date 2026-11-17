@@ -30,6 +30,10 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+def ensure_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
 def admin_guard(x_admin_api_key: str | None):
     if not settings.admin_api_key or not x_admin_api_key or not secrets.compare_digest(x_admin_api_key, settings.admin_api_key):
         raise HTTPException(401, "Unauthorized")
@@ -85,7 +89,7 @@ def request_otp(body: OTPRequest, db: Session = Depends(get_db)):
         License.email == email,
         License.active.is_(True),
     ))
-    if not lic or (lic.expires_at and lic.expires_at <= utcnow()):
+    if not lic or (lic.expires_at and ensure_utc(lic.expires_at) <= utcnow()):
         raise HTTPException(403, "License credentials are invalid or expired")
 
     now = utcnow()
@@ -129,7 +133,7 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
         License.active.is_(True),
     ))
     now = utcnow()
-    if not lic or (lic.expires_at and lic.expires_at <= now):
+    if not lic or (lic.expires_at and ensure_utc(lic.expires_at) <= now):
         raise HTTPException(403, "License is invalid or expired")
 
     otp = db.scalar(
@@ -141,7 +145,7 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
         )
         .order_by(desc(EmailOTP.created_at))
     )
-    if not otp or otp.expires_at <= now or otp.attempts >= settings.otp_max_attempts:
+    if not otp or ensure_utc(otp.expires_at) <= now or otp.attempts >= settings.otp_max_attempts:
         raise HTTPException(403, "Verification code is missing, expired, or locked")
 
     try:
