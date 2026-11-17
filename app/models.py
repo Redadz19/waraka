@@ -4,8 +4,10 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueCon
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
+
 def utcnow():
     return datetime.now(timezone.utc)
+
 
 class License(Base):
     __tablename__ = "licenses"
@@ -16,6 +18,8 @@ class License(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     devices: Mapped[list["Device"]] = relationship(back_populates="license", cascade="all, delete-orphan")
+    otp_codes: Mapped[list["EmailOTP"]] = relationship(back_populates="license", cascade="all, delete-orphan")
+
 
 class Device(Base):
     __tablename__ = "devices"
@@ -29,12 +33,15 @@ class Device(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     license: Mapped["License"] = relationship(back_populates="devices")
 
+
 class EmailOTP(Base):
     __tablename__ = "email_otps"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    license_id: Mapped[str] = mapped_column(ForeignKey("licenses.id", ondelete="CASCADE"), index=True)
     email: Mapped[str] = mapped_column(String(320), index=True)
     code_hash: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    license: Mapped["License"] = relationship(back_populates="otp_codes")
