@@ -36,3 +36,22 @@ def test_otp_hash_uses_secret_and_is_stable(monkeypatch):
     assert first != hash_otp("654321")
     monkeypatch.setattr(settings, "otp_secret", "y" * 40)
     assert first != hash_otp("123456")
+
+def test_ed25519_payload_signature_round_trip(monkeypatch):
+    import base64
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from app.security import public_key_b64, sign_payload
+
+    key = Ed25519PrivateKey.generate()
+    private_bytes = key.private_bytes(
+        serialization.Encoding.Raw,
+        serialization.PrivateFormat.Raw,
+        serialization.NoEncryption(),
+    )
+    monkeypatch.setattr(settings, "license_private_key_b64", base64.b64encode(private_bytes).decode("ascii"))
+    payload = b'{"license_id":"test","device_id":"device-test"}'
+    signature = base64.b64decode(sign_payload(payload))
+    public_bytes = base64.b64decode(public_key_b64())
+    Ed25519PrivateKey.from_private_bytes(private_bytes).public_key().verify(signature, payload)
+    assert len(public_bytes) == 32
