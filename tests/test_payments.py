@@ -33,8 +33,11 @@ def payment_api():
             db.close()
 
     main.app.dependency_overrides[main.get_db] = override_get_db
-    with TestClient(main.app) as client:
-        yield client, Session
+    # Do not enter TestClient's lifespan context: the app's development
+    # startup hook creates tables on the default engine, which would pollute
+    # the separate Alembic migration test database.
+    client = TestClient(main.app)
+    yield client, Session
     main.app.dependency_overrides.clear()
     engine.dispose()
 
