@@ -66,12 +66,30 @@ class Payment(Base):
     provider_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(80), nullable=False)
     customer_email: Mapped[str] = mapped_column(String(320), index=True)
-    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_dzd: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, index=True)
     checkout_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     license_id: Mapped[str | None] = mapped_column(ForeignKey("licenses.id"), nullable=True)
     provider_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    license_serial_ciphertext: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    license_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    license_email_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    license_email_last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+
+class PaymentWebhookEvent(Base):
+    __tablename__ = "payment_webhook_events"
+    __table_args__ = (
+        UniqueConstraint("provider", "event_id", name="uq_payment_webhook_provider_event"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    payment_id: Mapped[str] = mapped_column(ForeignKey("payments.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
