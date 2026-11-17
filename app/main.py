@@ -535,7 +535,7 @@ async def chargily_webhook(request: Request, db: Session = Depends(get_db)):
         db.rollback()
         return {"received": True, "duplicate": True}
 
-    if event_type == "checkout.paid" and payment.status == "paid":
+    if event_type == "checkout.paid" and payment.status == "paid" and payment.license_email_sent_at is None:
         _send_paid_license(payment, db)
     return {"received": True, "processed": True}
 
