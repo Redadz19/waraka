@@ -12,6 +12,7 @@ Canonical FastAPI licensing backend for the WARAKA Windows PDF application. This
 - Device activation, online verification and deactivation
 - Ed25519-signed activation payloads including the signed expiry timestamp (null means lifetime)
 - One-time purchase / lifetime-license support without recurring subscription billing
+- Provider-neutral payment ledger for single-purchase transactions, with idempotency and one-license-per-payment constraints
 - PostgreSQL/Neon support, Alembic migrations and Render blueprint
 
 ## Local setup
@@ -47,4 +48,4 @@ POST `/v1/admin/licenses` with header `X-Admin-API-Key` and body `{"email":"cust
 Create a Neon PostgreSQL database, connect its URL to Render as `DATABASE_URL`, then configure `ADMIN_API_KEY`, `OTP_SECRET`, Ed25519 keys and SMTP credentials in Render. The Render start command applies Alembic migrations before starting the API.
 
 ## Production release gates
-A live API still requires Neon and Render resources and working SMTP credentials. The Windows client still requires activation UI, a stable device fingerprint, embedded public-key signature verification and tested 14-day offline grace logic. Do not distribute a production build until these are implemented and tested.
+A live API still requires Neon and Render resources and working SMTP credentials. The payment ledger is only the database foundation; no live payment gateway or verified webhook is connected yet. The Windows client still requires activation UI, a stable device fingerprint, embedded public-key signature verification and tested 14-day offline grace logic. Do not distribute a production build until these are implemented and tested.
