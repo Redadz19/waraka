@@ -42,5 +42,7 @@ services:
         value: test
       - key: WARAKA_PRICE_DZD
         value: "0"
+      - key: CHARGILY_FEES_ALLOCATION
+        value: merchant
       - key: PUBLIC_BASE_URL
         sync: false
