@@ -202,7 +202,7 @@ def verify(body: VerifyRequest, db: Session = Depends(get_db)):
         License.active.is_(True),
     ))
     now = utcnow()
-    if not lic or (lic.expires_at and lic.expires_at <= now):
+    if not lic or (lic.expires_at and ensure_utc(lic.expires_at) <= now):
         raise HTTPException(403, "License is invalid or expired")
     device = db.scalar(select(Device).where(
         Device.license_id == lic.id,
