@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     max_devices_per_license: int = 3
     offline_grace_days: int = 14
     recheck_days: int = 7
+    license_serial_encryption_key: str = ""
+    chargily_api_secret_key: str = ""
+    chargily_mode: str = "test"
+    waraka_price_dzd: int = 0
+    public_base_url: str = ""
     cors_origins: str = "*"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
