@@ -1,22 +1,25 @@
+import asyncio
 import hashlib
 import hmac
 import json
 
 import pytest
 from cryptography.fernet import Fernet
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from starlette.requests import Request
 
 from app import main
 from app.config import settings
 from app.database import Base
 from app.models import License, Payment, PaymentWebhookEvent
+from app.schemas import PaymentCheckoutRequest
 
 
 @pytest.fixture
-def payment_api():
+def payment_db():
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -24,21 +27,9 @@ def payment_api():
     )
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-
-    def override_get_db():
-        db = Session()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    main.app.dependency_overrides[main.get_db] = override_get_db
-    # Do not enter TestClient's lifespan context: the app's development
-    # startup hook creates tables on the default engine, which would pollute
-    # the separate Alembic migration test database.
-    client = TestClient(main.app)
-    yield client, Session
-    main.app.dependency_overrides.clear()
+    db = Session()
+    yield db
+    db.close()
     engine.dispose()
 
 
@@ -62,7 +53,28 @@ def sign_event(payload: bytes) -> str:
     ).hexdigest()
 
 
-def test_checkout_uses_server_price_and_is_idempotent(payment_api, monkeypatch):
+def make_webhook_request(raw: bytes, signature: str) -> Request:
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/v1/payments/chargily/webhook",
+        "raw_path": b"/v1/payments/chargily/webhook",
+        "query_string": b"",
+        "headers": [(b"signature", signature.encode("ascii"))],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 443),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    return Request(scope, receive)
+
+
+def test_checkout_uses_server_price_and_is_idempotent(payment_db, monkeypatch):
     configure_payment_settings(monkeypatch)
     calls = []
 
@@ -85,38 +97,34 @@ def test_checkout_uses_server_price_and_is_idempotent(payment_api, monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(main.httpx, "post", fake_post)
-    client, Session = payment_api
-    headers = {"Idempotency-Key": "waraka-order-unique-001"}
-    body = {"email": "Buyer@Example.com", "payment_method": "cib", "locale": "ar"}
+    body = PaymentCheckoutRequest(
+        email="Buyer@Example.com",
+        payment_method="cib",
+        locale="ar",
+    )
 
-    first = client.post("/v1/payments/chargily/checkout", json=body, headers=headers)
-    second = client.post("/v1/payments/chargily/checkout", json=body, headers=headers)
+    first = main.create_chargily_checkout(body, "waraka-order-unique-001", payment_db)
+    second = main.create_chargily_checkout(body, "waraka-order-unique-001", payment_db)
 
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["checkout_url"].endswith("/001/pay")
-    assert second.json()["reused"] is True
+    assert first["checkout_url"].endswith("/001/pay")
+    assert second["reused"] is True
     assert len(calls) == 1
     assert calls[0][1]["json"]["amount"] == 2400
     assert calls[0][1]["json"]["currency"] == "dzd"
     assert calls[0][1]["json"]["payment_method"] == "cib"
 
-    db = Session()
-    assert db.scalar(select(func.count()).select_from(Payment)) == 1
-    payment = db.scalar(select(Payment))
+    assert payment_db.scalar(select(func.count()).select_from(Payment)) == 1
+    payment = payment_db.scalar(select(Payment))
     assert payment.customer_email == "buyer@example.com"
     assert payment.amount_dzd == 2400
     assert payment.status == "pending"
-    db.close()
 
 
-def test_signed_paid_webhook_issues_one_lifetime_license(payment_api, monkeypatch):
+def test_signed_paid_webhook_issues_one_lifetime_license_and_deduplicates(payment_db, monkeypatch):
     configure_payment_settings(monkeypatch)
     sent = []
     monkeypatch.setattr(main, "send_license", lambda email, serial: sent.append((email, serial)))
-    client, Session = payment_api
 
-    db = Session()
     payment = Payment(
         provider="chargily",
         provider_reference="chargily-checkout-paid-001",
@@ -126,10 +134,9 @@ def test_signed_paid_webhook_issues_one_lifetime_license(payment_api, monkeypatc
         currency="DZD",
         status="pending",
     )
-    db.add(payment)
-    db.commit()
+    payment_db.add(payment)
+    payment_db.commit()
     payment_id = payment.id
-    db.close()
 
     event = {
         "id": "chargily-event-paid-001",
@@ -145,50 +152,40 @@ def test_signed_paid_webhook_issues_one_lifetime_license(payment_api, monkeypatc
         },
     }
     raw = json.dumps(event, separators=(",", ":")).encode("utf-8")
-    headers = {"signature": sign_event(raw)}
+    signature = sign_event(raw)
 
-    first = client.post("/v1/payments/chargily/webhook", content=raw, headers=headers)
-    duplicate = client.post("/v1/payments/chargily/webhook", content=raw, headers=headers)
+    first = asyncio.run(main.chargily_webhook(make_webhook_request(raw, signature), payment_db))
+    duplicate = asyncio.run(main.chargily_webhook(make_webhook_request(raw, signature), payment_db))
 
-    assert first.status_code == 200
-    assert first.json()["processed"] is True
-    assert duplicate.status_code == 200
-    assert duplicate.json()["duplicate"] is True
+    assert first["processed"] is True
+    assert duplicate["duplicate"] is True
     assert len(sent) == 1
     assert sent[0][0] == "buyer@example.com"
 
-    db = Session()
-    stored_payment = db.get(Payment, payment_id)
+    stored_payment = payment_db.get(Payment, payment_id)
     assert stored_payment.status == "paid"
     assert stored_payment.license_id is not None
     assert stored_payment.license_email_sent_at is not None
-    license_record = db.get(License, stored_payment.license_id)
+    license_record = payment_db.get(License, stored_payment.license_id)
     assert license_record is not None
     assert license_record.expires_at is None
     assert license_record.email == "buyer@example.com"
-    assert db.scalar(select(func.count()).select_from(License)) == 1
-    assert db.scalar(select(func.count()).select_from(PaymentWebhookEvent)) == 1
-    db.close()
+    assert payment_db.scalar(select(func.count()).select_from(License)) == 1
+    assert payment_db.scalar(select(func.count()).select_from(PaymentWebhookEvent)) == 1
 
 
-def test_webhook_rejects_invalid_signature(payment_api, monkeypatch):
+def test_webhook_rejects_invalid_signature(payment_db, monkeypatch):
     configure_payment_settings(monkeypatch)
-    client, _ = payment_api
     raw = b'{"id":"event-1","type":"checkout.paid","livemode":false,"data":{"id":"checkout-1"}}'
 
-    response = client.post(
-        "/v1/payments/chargily/webhook",
-        content=raw,
-        headers={"signature": "0" * 64},
-    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.chargily_webhook(make_webhook_request(raw, "0" * 64), payment_db))
 
-    assert response.status_code == 403
+    assert error.value.status_code == 403
 
 
-def test_webhook_rejects_amount_mismatch_without_issuing_license(payment_api, monkeypatch):
+def test_webhook_rejects_amount_mismatch_without_issuing_license(payment_db, monkeypatch):
     configure_payment_settings(monkeypatch)
-    client, Session = payment_api
-    db = Session()
     payment = Payment(
         provider="chargily",
         provider_reference="chargily-checkout-mismatch",
@@ -198,9 +195,8 @@ def test_webhook_rejects_amount_mismatch_without_issuing_license(payment_api, mo
         currency="DZD",
         status="pending",
     )
-    db.add(payment)
-    db.commit()
-    db.close()
+    payment_db.add(payment)
+    payment_db.commit()
 
     event = {
         "id": "chargily-event-mismatch",
@@ -214,13 +210,12 @@ def test_webhook_rejects_amount_mismatch_without_issuing_license(payment_api, mo
         },
     }
     raw = json.dumps(event, separators=(",", ":")).encode("utf-8")
-    response = client.post(
-        "/v1/payments/chargily/webhook",
-        content=raw,
-        headers={"signature": sign_event(raw)},
-    )
 
-    assert response.status_code == 400
-    db = Session()
-    assert db.scalar(select(func.count()).select_from(License)) == 0
-    db.close()
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.chargily_webhook(
+            make_webhook_request(raw, sign_event(raw)),
+            payment_db,
+        ))
+
+    assert error.value.status_code == 400
+    assert payment_db.scalar(select(func.count()).select_from(License)) == 0
