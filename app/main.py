@@ -361,6 +361,12 @@ def create_chargily_checkout(
     db.refresh(payment)
 
     base_url = _public_base_url()
+    fees_allocation = settings.chargily_fees_allocation.strip().lower()
+    if fees_allocation not in {"customer", "merchant", "split"}:
+        payment.status = "failed"
+        payment.provider_metadata = {"request_state": "invalid_fee_allocation_setting"}
+        db.commit()
+        raise HTTPException(503, "CHARGILY_FEES_ALLOCATION must be customer, merchant or split")
     payload = {
         "amount": payment.amount_dzd,
         "currency": "dzd",
@@ -370,7 +376,7 @@ def create_chargily_checkout(
         "webhook_endpoint": f"{base_url}/v1/payments/chargily/webhook",
         "description": f"WARAKA lifetime license purchase {payment.id}",
         "locale": body.locale,
-        "chargily_pay_fees_allocation": "merchant",
+        "chargily_pay_fees_allocation": fees_allocation,
     }
     try:
         response = httpx.post(
