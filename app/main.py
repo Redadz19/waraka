@@ -39,6 +39,20 @@ def admin_guard(x_admin_api_key: str | None):
         raise HTTPException(401, "Unauthorized")
 
 
+def build_activation_payload(lic: License, device: Device, email: str, now: datetime) -> dict:
+    """Build the exact data covered by the Ed25519 activation signature."""
+    expires_at = ensure_utc(lic.expires_at).isoformat() if lic.expires_at else None
+    return {
+        "license_id": lic.id,
+        "email": email,
+        "device_id": device.device_id,
+        "issued_at": ensure_utc(now).isoformat(),
+        "expires_at": expires_at,
+        "offline_grace_days": settings.offline_grace_days,
+        "recheck_days": settings.recheck_days,
+    }
+
+
 @app.on_event("startup")
 def startup():
     if settings.environment == "development":
@@ -118,7 +132,9 @@ def request_otp(body: OTPRequest, db: Session = Depends(get_db)):
     try:
         send_otp(email, code)
     except Exception as exc:
-        db.delete(otp)
+        # Keep a consumed record so repeated delivery failures cannot bypass
+        # the per-license resend cooldown.
+        otp.consumed = True
         db.commit()
         raise HTTPException(503, "Email delivery is unavailable") from exc
     return {"status": "sent", "expires_in": settings.otp_ttl_seconds}
@@ -160,6 +176,7 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
 
     device = db.scalar(select(Device).where(Device.license_id == lic.id, Device.device_id == body.device_id))
     if device and device.revoked:
+        db.commit()
         raise HTTPException(403, "This device has been revoked")
     if not device:
         active_count = db.scalar(
@@ -169,19 +186,13 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
             )
         ) or 0
         if active_count >= settings.max_devices_per_license:
+            db.commit()
             raise HTTPException(409, "Maximum number of activated devices reached")
         device = Device(license_id=lic.id, device_id=body.device_id, device_name=body.device_name)
         db.add(device)
 
     device.last_seen_at = now
-    payload = {
-        "license_id": lic.id,
-        "email": email,
-        "device_id": device.device_id,
-        "issued_at": now.isoformat(),
-        "offline_grace_days": 14,
-        "recheck_days": 7,
-    }
+    payload = build_activation_payload(lic, device, email, now)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     try:
         signature = sign_payload(encoded)
