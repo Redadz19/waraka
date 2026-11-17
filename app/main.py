@@ -88,7 +88,7 @@ def request_otp(body: OTPRequest, db: Session = Depends(get_db)):
         License.serial_hash == hash_serial(body.serial),
         License.email == email,
         License.active.is_(True),
-    ))
+    ).with_for_update())
     if not lic or (lic.expires_at and ensure_utc(lic.expires_at) <= utcnow()):
         raise HTTPException(403, "License credentials are invalid or expired")
 
@@ -131,7 +131,7 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
         License.serial_hash == hash_serial(body.serial),
         License.email == email,
         License.active.is_(True),
-    ))
+    ).with_for_update())
     now = utcnow()
     if not lic or (lic.expires_at and ensure_utc(lic.expires_at) <= now):
         raise HTTPException(403, "License is invalid or expired")
