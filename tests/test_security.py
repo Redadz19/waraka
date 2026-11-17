@@ -40,7 +40,7 @@ def test_otp_hash_uses_secret_and_is_stable(monkeypatch):
 def test_ed25519_payload_signature_round_trip(monkeypatch):
     import base64
     from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
     from app.security import public_key_b64, sign_payload
 
     key = Ed25519PrivateKey.generate()
@@ -53,5 +53,5 @@ def test_ed25519_payload_signature_round_trip(monkeypatch):
     payload = b'{"license_id":"test","device_id":"device-test"}'
     signature = base64.b64decode(sign_payload(payload))
     public_bytes = base64.b64decode(public_key_b64())
-    Ed25519PrivateKey.from_private_bytes(private_bytes).public_key().verify(signature, payload)
+    Ed25519PublicKey.from_public_bytes(public_bytes).verify(signature, payload)
     assert len(public_bytes) == 32
