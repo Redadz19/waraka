@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     chargily_api_secret_key: str = ""
     chargily_mode: str = "test"
     waraka_price_dzd: int = 0
+    chargily_fees_allocation: str = "merchant"
     public_base_url: str = ""
     cors_origins: str = "*"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
