@@ -169,8 +169,8 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
     except RuntimeError as exc:
         raise HTTPException(503, "Email verification is not configured") from exc
 
-    otp.attempts += 1
     if not secrets.compare_digest(otp.code_hash, supplied_hash):
+        otp.attempts += 1
         db.commit()
         raise HTTPException(403, "Invalid verification code")
 
