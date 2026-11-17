@@ -276,3 +276,41 @@ def test_admin_can_retry_license_email_after_smtp_failure(payment_db, monkeypatc
         ("buyer@example.com", serial),
         ("buyer@example.com", serial),
     ]
+
+
+
+def test_webhook_rejects_test_live_environment_mismatch(payment_db, monkeypatch):
+    configure_payment_settings(monkeypatch)
+    payment = Payment(
+        provider="chargily",
+        provider_reference="chargily-checkout-live-mismatch",
+        idempotency_key="d" * 64,
+        customer_email="buyer@example.com",
+        amount_dzd=2400,
+        currency="DZD",
+        status="pending",
+    )
+    payment_db.add(payment)
+    payment_db.commit()
+
+    event = {
+        "id": "chargily-event-live-mismatch",
+        "livemode": True,
+        "type": "checkout.paid",
+        "data": {
+            "id": "chargily-checkout-live-mismatch",
+            "amount": 2400,
+            "currency": "dzd",
+            "status": "paid",
+        },
+    }
+    raw = json.dumps(event, separators=(",", ":")).encode("utf-8")
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.chargily_webhook(
+            make_webhook_request(raw, sign_event(raw)),
+            payment_db,
+        ))
+
+    assert error.value.status_code == 403
+    assert payment_db.scalar(select(func.count()).select_from(License)) == 0
