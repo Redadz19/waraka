@@ -55,7 +55,7 @@ class Payment(Base):
         UniqueConstraint("provider", "provider_reference", name="uq_payment_provider_reference"),
         UniqueConstraint("idempotency_key", name="uq_payments_idempotency_key"),
         UniqueConstraint("license_id", name="uq_payment_license"),
-        CheckConstraint("amount_minor > 0", name="ck_payment_amount_positive"),
+        CheckConstraint("amount_dzd > 0", name="ck_payment_amount_positive"),
         CheckConstraint(
             "status IN ('pending', 'paid', 'failed', 'refunded')",
             name="ck_payment_status",
