@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     otp_resend_seconds: int = 60
     otp_max_attempts: int = 5
     max_devices_per_license: int = 3
+    offline_grace_days: int = 14
+    recheck_days: int = 7
     cors_origins: str = "*"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
