@@ -1,18 +1,31 @@
+import hashlib
+import hmac
 import json
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+import httpx
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import Base, engine, get_db
-from app.models import Device, EmailOTP, License
-from app.schemas import LicenseCreate, OTPRequest, ActivateRequest, DeactivateRequest, VerifyRequest
-from app.security import hash_otp, hash_serial, new_serial, public_key_b64, sign_payload
-from app.emailer import send_otp
+from app.models import Device, EmailOTP, License, Payment, PaymentWebhookEvent
+from app.schemas import (
+    LicenseCreate, OTPRequest, ActivateRequest, DeactivateRequest, VerifyRequest,
+    PaymentCheckoutRequest,
+)
+from app.security import (
+    hash_otp, hash_serial, new_serial, public_key_b64, sign_payload,
+    encrypt_license_serial, decrypt_license_serial,
+)
+from app.emailer import send_otp, send_license
 
 
 app = FastAPI(title=settings.app_name, version="1.1.0")
@@ -249,3 +262,318 @@ def deactivate(body: DeactivateRequest, db: Session = Depends(get_db)):
     device.revoked = True
     db.commit()
     return {"deactivated": True}
+
+
+
+def _chargily_checkout_endpoint() -> str:
+    mode = settings.chargily_mode.strip().lower()
+    if mode == "test":
+        return "https://pay.chargily.net/test/api/v2/checkouts"
+    if mode == "live":
+        return "https://pay.chargily.net/api/v2/checkouts"
+    raise HTTPException(503, "Chargily mode must be test or live")
+
+
+def _public_base_url() -> str:
+    value = settings.public_base_url.strip().rstrip("/")
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise HTTPException(503, "PUBLIC_BASE_URL must be a valid HTTPS URL")
+    return value
+
+
+def _send_paid_license(payment: Payment, db: Session) -> None:
+    if not payment.license_serial_ciphertext:
+        return
+    payment.license_email_attempts += 1
+    try:
+        serial = decrypt_license_serial(payment.license_serial_ciphertext)
+        send_license(payment.customer_email, serial)
+        payment.license_email_sent_at = utcnow()
+        payment.license_email_last_error = None
+    except Exception:
+        # Payment is already committed. Keep the encrypted serial so an
+        # administrator can safely retry delivery without issuing a new key.
+        payment.license_email_last_error = "Email delivery failed; retry is available"
+    db.commit()
+
+
+@app.post("/v1/payments/chargily/checkout")
+def create_chargily_checkout(
+    body: PaymentCheckoutRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+):
+    if not settings.chargily_api_secret_key:
+        raise HTTPException(503, "Chargily API credentials are not configured")
+    if settings.waraka_price_dzd <= 0:
+        raise HTTPException(503, "WARAKA purchase price has not been configured")
+    if not idempotency_key or not 16 <= len(idempotency_key) <= 80 or not re.fullmatch(r"[A-Za-z0-9._:-]+", idempotency_key):
+        raise HTTPException(400, "A valid Idempotency-Key header is required")
+    email = str(body.email).lower()
+    key_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+
+    existing = db.scalar(
+        select(Payment).where(Payment.idempotency_key == key_hash).with_for_update()
+    )
+    if existing:
+        if existing.customer_email != email or existing.amount_dzd != settings.waraka_price_dzd:
+            raise HTTPException(409, "Idempotency key was already used for a different purchase")
+        if existing.checkout_url:
+            return {
+                "payment_id": existing.id,
+                "status": existing.status,
+                "checkout_url": existing.checkout_url,
+                "amount": existing.amount_dzd,
+                "currency": "dzd",
+                "reused": True,
+            }
+        raise HTTPException(409, "This purchase request is already being processed; use a new key only after support review")
+
+    _public_base_url()
+    _chargily_checkout_endpoint()
+    payment = Payment(
+        provider="chargily",
+        idempotency_key=key_hash,
+        customer_email=email,
+        amount_dzd=settings.waraka_price_dzd,
+        currency="DZD",
+        status="pending",
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    base_url = _public_base_url()
+    payload = {
+        "amount": payment.amount_dzd,
+        "currency": "dzd",
+        "payment_method": body.payment_method,
+        "success_url": f"{base_url}/payments/success",
+        "failure_url": f"{base_url}/payments/failure",
+        "webhook_endpoint": f"{base_url}/v1/payments/chargily/webhook",
+        "description": f"WARAKA lifetime license purchase {payment.id}",
+        "locale": body.locale,
+        "chargily_pay_fees_allocation": "merchant",
+    }
+    try:
+        response = httpx.post(
+            _chargily_checkout_endpoint(),
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {settings.chargily_api_secret_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=25.0,
+        )
+    except httpx.TimeoutException as exc:
+        payment.provider_metadata = {"request_state": "timeout_unknown"}
+        db.commit()
+        raise HTTPException(504, "Payment gateway response timed out; do not repeat this request") from exc
+    except httpx.RequestError as exc:
+        payment.provider_metadata = {"request_state": "connection_error"}
+        db.commit()
+        raise HTTPException(502, "Could not connect to the payment gateway") from exc
+
+    if response.status_code >= 400:
+        payment.status = "failed"
+        payment.provider_metadata = {"gateway_http_status": response.status_code}
+        db.commit()
+        raise HTTPException(502, "Chargily rejected the checkout request")
+
+    try:
+        checkout = response.json()
+    except ValueError as exc:
+        payment.provider_metadata = {"request_state": "invalid_gateway_response"}
+        db.commit()
+        raise HTTPException(502, "Payment gateway returned an invalid response") from exc
+
+    checkout_id = checkout.get("id")
+    checkout_url = checkout.get("checkout_url")
+    checkout_host = urlparse(checkout_url).hostname if isinstance(checkout_url, str) else None
+    expected_live = settings.chargily_mode.strip().lower() == "live"
+    actual_live = checkout.get("livemode")
+    if isinstance(actual_live, str):
+        actual_live = actual_live.strip().lower() == "true"
+    if (
+        not isinstance(checkout_id, str)
+        or not checkout_id
+        or not isinstance(checkout_url, str)
+        or urlparse(checkout_url).scheme != "https"
+        or not checkout_host
+        or not (checkout_host == "chargily.dz" or checkout_host.endswith(".chargily.dz")
+                or checkout_host == "chargily.net" or checkout_host.endswith(".chargily.net"))
+        or checkout.get("amount") != payment.amount_dzd
+        or str(checkout.get("currency", "")).lower() != "dzd"
+        or actual_live is not expected_live
+    ):
+        payment.status = "failed"
+        payment.provider_metadata = {"request_state": "gateway_response_validation_failed"}
+        db.commit()
+        raise HTTPException(502, "Payment gateway response did not match the expected purchase")
+
+    payment.provider_reference = checkout_id
+    payment.checkout_url = checkout_url
+    payment.provider_metadata = {
+        "livemode": expected_live,
+        "gateway_status": checkout.get("status"),
+        "payment_method": body.payment_method,
+    }
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "Gateway checkout reference already exists") from exc
+
+    return {
+        "payment_id": payment.id,
+        "status": payment.status,
+        "checkout_url": payment.checkout_url,
+        "amount": payment.amount_dzd,
+        "currency": "dzd",
+        "reused": False,
+    }
+
+
+@app.post("/v1/payments/chargily/webhook")
+async def chargily_webhook(request: Request, db: Session = Depends(get_db)):
+    if not settings.chargily_api_secret_key:
+        raise HTTPException(503, "Payment webhook verification is not configured")
+    raw_body = await request.body()
+    if len(raw_body) > 1_000_000:
+        raise HTTPException(413, "Webhook payload is too large")
+    signature = request.headers.get("signature", "")
+    if not signature:
+        raise HTTPException(400, "Missing Chargily signature")
+    expected_signature = hmac.new(
+        settings.chargily_api_secret_key.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(403, "Invalid Chargily signature")
+    try:
+        event = json.loads(raw_body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, "Invalid webhook JSON") from exc
+
+    event_id = event.get("id")
+    event_type = event.get("type")
+    checkout = event.get("data")
+    if not isinstance(event_id, str) or not event_id or not isinstance(event_type, str) or not isinstance(checkout, dict):
+        raise HTTPException(400, "Invalid webhook event structure")
+    if event_type not in {"checkout.paid", "checkout.failed", "checkout.canceled"}:
+        return {"received": True, "ignored": True}
+
+    livemode = event.get("livemode")
+    if isinstance(livemode, str):
+        livemode = livemode.strip().lower() == "true"
+    if not isinstance(livemode, bool):
+        raise HTTPException(400, "Missing payment environment flag")
+    expected_live = settings.chargily_mode.strip().lower() == "live"
+    if livemode is not expected_live:
+        raise HTTPException(403, "Webhook belongs to a different Chargily environment")
+
+    checkout_id = checkout.get("id")
+    if not isinstance(checkout_id, str) or not checkout_id:
+        raise HTTPException(400, "Missing checkout identifier")
+    payment = db.scalar(
+        select(Payment).where(
+            Payment.provider == "chargily",
+            Payment.provider_reference == checkout_id,
+        ).with_for_update()
+    )
+    if not payment:
+        raise HTTPException(404, "Payment record not found")
+
+    duplicate = db.scalar(
+        select(PaymentWebhookEvent).where(
+            PaymentWebhookEvent.provider == "chargily",
+            PaymentWebhookEvent.event_id == event_id,
+        )
+    )
+    if duplicate:
+        return {"received": True, "duplicate": True}
+
+    if event_type == "checkout.paid":
+        if checkout.get("status") != "paid":
+            raise HTTPException(400, "Paid event has a non-paid checkout status")
+        if checkout.get("amount") != payment.amount_dzd or str(checkout.get("currency", "")).upper() != payment.currency:
+            raise HTTPException(400, "Paid checkout amount or currency does not match the order")
+        if payment.status != "refunded":
+            if not payment.license_id:
+                try:
+                    serial = new_serial()
+                    license_record = License(
+                        serial_hash=hash_serial(serial),
+                        email=payment.customer_email,
+                        active=True,
+                        expires_at=None,
+                    )
+                    db.add(license_record)
+                    db.flush()
+                    payment.license_id = license_record.id
+                    payment.license_serial_ciphertext = encrypt_license_serial(serial)
+                except (RuntimeError, ValueError) as exc:
+                    db.rollback()
+                    raise HTTPException(503, "License serial encryption is not configured correctly") from exc
+            payment.status = "paid"
+            payment.paid_at = payment.paid_at or utcnow()
+    else:
+        if payment.status not in {"paid", "refunded"}:
+            payment.status = "failed"
+
+    db.add(PaymentWebhookEvent(
+        provider="chargily",
+        event_id=event_id,
+        payment_id=payment.id,
+        event_type=event_type,
+    ))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return {"received": True, "duplicate": True}
+
+    if event_type == "checkout.paid" and payment.status == "paid":
+        _send_paid_license(payment, db)
+    return {"received": True, "processed": True}
+
+
+@app.get("/v1/payments/{payment_id}")
+def get_payment_status(payment_id: str, db: Session = Depends(get_db)):
+    payment = db.get(Payment, payment_id)
+    if not payment:
+        raise HTTPException(404, "Payment not found")
+    return {
+        "payment_id": payment.id,
+        "status": payment.status,
+        "license_issued": payment.license_id is not None,
+        "license_email_sent": payment.license_email_sent_at is not None,
+    }
+
+
+@app.post("/v1/admin/payments/{payment_id}/resend-license")
+def resend_license_email(
+    payment_id: str,
+    x_admin_api_key: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    admin_guard(x_admin_api_key)
+    payment = db.get(Payment, payment_id)
+    if not payment or payment.status != "paid" or not payment.license_serial_ciphertext:
+        raise HTTPException(404, "Paid license delivery record not found")
+    _send_paid_license(payment, db)
+    if payment.license_email_sent_at is None:
+        raise HTTPException(503, "License email delivery failed")
+    return {"sent": True, "payment_id": payment.id}
+
+
+@app.get("/payments/success", response_class=PlainTextResponse)
+def payment_success_return():
+    return "Thank you. Payment confirmation is processed securely by Chargily. Your WARAKA lifetime license will be sent to your email after confirmation."
+
+
+@app.get("/payments/failure", response_class=PlainTextResponse)
+def payment_failure_return():
+    return "The payment was not completed. No WARAKA license has been issued."
