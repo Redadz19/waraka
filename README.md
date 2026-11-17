@@ -10,7 +10,8 @@ Canonical FastAPI licensing backend for the WARAKA Windows PDF application. This
 - HMAC-SHA256 OTP digests using a server-side secret
 - Three active devices per license
 - Device activation, online verification and deactivation
-- Ed25519-signed activation payloads
+- Ed25519-signed activation payloads including the signed expiry timestamp (null means lifetime)
+- One-time purchase / lifetime-license support without recurring subscription billing
 - PostgreSQL/Neon support, Alembic migrations and Render blueprint
 
 ## Local setup
@@ -30,7 +31,9 @@ Run `python scripts/generate_keys.py`. Store the private key only in Render envi
 2. The server checks the license and sends a six-digit code to the license email.
 3. The client sends serial, email, code, device ID and device name to `POST /v1/license/activate`.
 4. The server consumes the one-time code and returns the signed license payload.
-5. The client verifies the Ed25519 signature locally, permits up to 14 days offline, and performs online rechecks every 7 days.
+5. The client verifies the Ed25519 signature locally, checks the signed `expires_at` value (null means a lifetime license), permits up to the configured offline grace period, and performs online rechecks at the configured interval.
+
+Lifetime licenses are issued with `expires_at: null`; this means a single purchase with no recurring renewal. The three-device limit and online/offline security checks still apply.
 
 Other client endpoints:
 - `GET /v1/public-key`
