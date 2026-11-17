@@ -175,10 +175,7 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
         raise HTTPException(403, "Invalid verification code")
 
     device = db.scalar(select(Device).where(Device.license_id == lic.id, Device.device_id == body.device_id))
-    if device and device.revoked:
-        db.commit()
-        raise HTTPException(403, "This device has been revoked")
-    if not device:
+    if not device or device.revoked:
         active_count = db.scalar(
             select(func.count()).select_from(Device).where(
                 Device.license_id == lic.id,
@@ -188,8 +185,15 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
         if active_count >= settings.max_devices_per_license:
             db.commit()
             raise HTTPException(409, "Maximum number of activated devices reached")
-        device = Device(license_id=lic.id, device_id=body.device_id, device_name=body.device_name)
-        db.add(device)
+        if device:
+            # A user-deactivated device may be activated again without creating
+            # a duplicate row or bypassing the active-device limit.
+            device.revoked = False
+            device.device_name = body.device_name or device.device_name
+            device.activated_at = now
+        else:
+            device = Device(license_id=lic.id, device_id=body.device_id, device_name=body.device_name)
+            db.add(device)
 
     device.last_seen_at = now
     payload = build_activation_payload(lic, device, email, now)
