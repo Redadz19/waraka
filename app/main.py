@@ -8,7 +8,7 @@ from app.config import settings
 from app.database import get_db, Base, engine
 from app.models import Device, EmailOTP, License
 from app.schemas import LicenseCreate, OTPRequest, OTPVerifyRequest, ActivateRequest, DeactivateRequest, VerifyRequest
-from app.security import hash_value, sign_payload, new_serial
+from app.security import hash_value, hash_serial, sign_payload, new_serial, public_key_b64
 from app.emailer import send_otp
 
 app = FastAPI(title=settings.app_name, version="1.0.0")
@@ -27,6 +27,13 @@ def startup():
     if settings.environment == "development":
         Base.metadata.create_all(bind=engine)
 
+@app.get("/v1/public-key")
+def get_public_key():
+    try:
+        return {"algorithm": "Ed25519", "public_key": public_key_b64()}
+    except Exception as exc:
+        raise HTTPException(503, "Signing key is not configured") from exc
+
 @app.get("/health")
 def health():
     return {"status":"ok","service":"waraka-licensing","version":"1.0.0"}
@@ -36,7 +43,7 @@ def create_license(body: LicenseCreate, x_admin_api_key: str | None = Header(def
     admin_guard(x_admin_api_key)
     serial = new_serial()
     expires = datetime.fromisoformat(body.expires_at) if body.expires_at else None
-    lic = License(serial_hash=hash_value(serial), email=str(body.email).lower(), expires_at=expires)
+    lic = License(serial_hash=hash_serial(serial), email=str(body.email).lower(), expires_at=expires)
     db.add(lic); db.commit()
     return {"id":lic.id,"serial":serial,"email":lic.email,"expires_at":lic.expires_at}
 
@@ -81,7 +88,7 @@ def verify_otp(body: OTPVerifyRequest, db: Session = Depends(get_db)):
 @app.post("/v1/license/activate")
 def activate(body: ActivateRequest, db: Session = Depends(get_db)):
     email = str(body.email).lower()
-    lic = db.scalar(select(License).where(License.serial_hash == hash_value(body.serial), License.email == email, License.active.is_(True)))
+    lic = db.scalar(select(License).where(License.serial_hash == hash_serial(body.serial), License.email == email, License.active.is_(True)))
     if not lic or (lic.expires_at and lic.expires_at < utcnow()):
         raise HTTPException(403, "License is invalid or expired")
     device = db.scalar(select(Device).where(Device.license_id == lic.id, Device.device_id == body.device_id))
@@ -104,7 +111,7 @@ def activate(body: ActivateRequest, db: Session = Depends(get_db)):
 
 @app.post("/v1/license/verify")
 def verify(body: VerifyRequest, db: Session = Depends(get_db)):
-    lic = db.scalar(select(License).where(License.serial_hash == hash_value(body.serial), License.email == str(body.email).lower(), License.active.is_(True)))
+    lic = db.scalar(select(License).where(License.serial_hash == hash_serial(body.serial), License.email == str(body.email).lower(), License.active.is_(True)))
     if not lic or (lic.expires_at and lic.expires_at < utcnow()):
         raise HTTPException(403, "License is invalid or expired")
     device = db.scalar(select(Device).where(Device.license_id == lic.id, Device.device_id == body.device_id, Device.revoked.is_(False)))
@@ -115,7 +122,7 @@ def verify(body: VerifyRequest, db: Session = Depends(get_db)):
 
 @app.post("/v1/license/deactivate")
 def deactivate(body: DeactivateRequest, db: Session = Depends(get_db)):
-    lic = db.scalar(select(License).where(License.serial_hash == hash_value(body.serial)))
+    lic = db.scalar(select(License).where(License.serial_hash == hash_serial(body.serial)))
     if not lic:
         raise HTTPException(404, "License not found")
     device = db.scalar(select(Device).where(Device.license_id == lic.id, Device.device_id == body.device_id, Device.revoked.is_(False)))
