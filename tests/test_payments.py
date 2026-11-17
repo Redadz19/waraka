@@ -85,6 +85,7 @@ def test_checkout_uses_server_price_and_is_idempotent(payment_db, monkeypatch):
         def json():
             return {
                 "id": "chargily-checkout-001",
+                "entity": "checkout",
                 "checkout_url": "https://pay.chargily.dz/test/checkouts/001/pay",
                 "amount": 2400,
                 "currency": "dzd",
