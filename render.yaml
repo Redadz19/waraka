@@ -1,6 +1,7 @@
 services:
   - type: web
     name: waraka-licensing-api
+    region: frankfurt
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
