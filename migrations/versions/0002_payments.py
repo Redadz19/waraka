@@ -30,6 +30,7 @@ def upgrade():
         sa.UniqueConstraint("provider", "provider_reference", name="uq_payment_provider_reference"),
         sa.UniqueConstraint("idempotency_key", name="uq_payments_idempotency_key"),
         sa.UniqueConstraint("license_id", name="uq_payment_license"),
+        sa.CheckConstraint("amount_minor > 0", name="ck_payment_amount_positive"),
         sa.CheckConstraint(
             "status IN ('pending', 'paid', 'failed', 'refunded')",
             name="ck_payment_status",
