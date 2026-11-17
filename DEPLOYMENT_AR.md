@@ -34,6 +34,7 @@
 | `CHARGILY_API_SECRET_KEY` | مفتاح Chargily السري لوضع الاختبار أولاً |
 | `CHARGILY_MODE` | `test` حالياً؛ لا تغيّره إلى `live` قبل موافقة Chargily |
 | `WARAKA_PRICE_DZD` | سعر الرخصة بالدينار؛ يبقى 0 إلى حين اعتماد السعر |
+| `CHARGILY_FEES_ALLOCATION` | من يتحمل رسوم البوابة: `merchant` أو `customer` أو `split` |
 | `PUBLIC_BASE_URL` | عنوان HTTPS الفعلي لخدمة Render |
 
 المتغيران `OFFLINE_GRACE_DAYS` و`RECHECK_DAYS` مضبوطان افتراضياً على 14 و7 أيام في ملف Render.
