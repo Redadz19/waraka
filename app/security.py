@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import secrets
+from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from app.config import settings
@@ -48,3 +49,20 @@ def public_key_b64() -> str:
             raise RuntimeError("LICENSE_PUBLIC_KEY_B64 does not match LICENSE_PRIVATE_KEY_B64")
         raw = configured
     return base64.b64encode(raw).decode("ascii")
+
+
+
+def encrypt_license_serial(serial: str) -> str:
+    if not settings.license_serial_encryption_key:
+        raise RuntimeError("LICENSE_SERIAL_ENCRYPTION_KEY is not configured")
+    return Fernet(settings.license_serial_encryption_key.encode("ascii")).encrypt(
+        serial.encode("utf-8")
+    ).decode("ascii")
+
+
+def decrypt_license_serial(ciphertext: str) -> str:
+    if not settings.license_serial_encryption_key:
+        raise RuntimeError("LICENSE_SERIAL_ENCRYPTION_KEY is not configured")
+    return Fernet(settings.license_serial_encryption_key.encode("ascii")).decrypt(
+        ciphertext.encode("ascii")
+    ).decode("utf-8")
