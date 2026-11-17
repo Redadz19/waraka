@@ -34,3 +34,13 @@ services:
         value: "14"
       - key: RECHECK_DAYS
         value: "7"
+      - key: LICENSE_SERIAL_ENCRYPTION_KEY
+        sync: false
+      - key: CHARGILY_API_SECRET_KEY
+        sync: false
+      - key: CHARGILY_MODE
+        value: test
+      - key: WARAKA_PRICE_DZD
+        value: "0"
+      - key: PUBLIC_BASE_URL
+        sync: false
