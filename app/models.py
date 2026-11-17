@@ -53,7 +53,9 @@ class Payment(Base):
     __tablename__ = "payments"
     __table_args__ = (
         UniqueConstraint("provider", "provider_reference", name="uq_payment_provider_reference"),
+        UniqueConstraint("idempotency_key", name="uq_payments_idempotency_key"),
         UniqueConstraint("license_id", name="uq_payment_license"),
+        CheckConstraint("amount_minor > 0", name="ck_payment_amount_positive"),
         CheckConstraint(
             "status IN ('pending', 'paid', 'failed', 'refunded')",
             name="ck_payment_status",
@@ -62,7 +64,7 @@ class Payment(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     provider_reference: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    idempotency_key: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(80), nullable=False)
     customer_email: Mapped[str] = mapped_column(String(320), index=True)
     amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
