@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -30,3 +31,10 @@ class VerifyRequest(BaseModel):
     serial: str = Field(min_length=8, max_length=80)
     email: EmailStr
     device_id: str = Field(min_length=8, max_length=128)
+
+
+
+class PaymentCheckoutRequest(BaseModel):
+    email: EmailStr
+    payment_method: Literal["edahabia", "cib", "chargily_app"] = "edahabia"
+    locale: Literal["ar", "fr", "en"] = "ar"
