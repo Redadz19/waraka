@@ -1,4 +1,7 @@
-from app.security import hash_serial, hash_value, new_serial
+import pytest
+
+from app.config import settings
+from app.security import hash_otp, hash_serial, hash_value, new_serial
 
 
 def test_hash_is_stable():
@@ -18,3 +21,18 @@ def test_serial_format_and_uniqueness():
     assert len(parts) == 9
     assert all(len(part) == 4 for part in parts[1:])
     assert first != second
+
+
+def test_otp_hash_requires_server_secret(monkeypatch):
+    monkeypatch.setattr(settings, "otp_secret", "")
+    with pytest.raises(RuntimeError):
+        hash_otp("123456")
+
+
+def test_otp_hash_uses_secret_and_is_stable(monkeypatch):
+    monkeypatch.setattr(settings, "otp_secret", "x" * 40)
+    first = hash_otp("123456")
+    assert first == hash_otp("123456")
+    assert first != hash_otp("654321")
+    monkeypatch.setattr(settings, "otp_secret", "y" * 40)
+    assert first != hash_otp("123456")
