@@ -1,0 +1,40 @@
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.database import Base
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+class License(Base):
+    __tablename__ = "licenses"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    serial_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    devices: Mapped[list["Device"]] = relationship(back_populates="license", cascade="all, delete-orphan")
+
+class Device(Base):
+    __tablename__ = "devices"
+    __table_args__ = (UniqueConstraint("license_id", "device_id", name="uq_license_device"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    license_id: Mapped[str] = mapped_column(ForeignKey("licenses.id", ondelete="CASCADE"), index=True)
+    device_id: Mapped[str] = mapped_column(String(128))
+    device_name: Mapped[str] = mapped_column(String(200), default="")
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    license: Mapped["License"] = relationship(back_populates="devices")
+
+class EmailOTP(Base):
+    __tablename__ = "email_otps"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False)
