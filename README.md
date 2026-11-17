@@ -12,7 +12,10 @@ Canonical FastAPI licensing backend for the WARAKA Windows PDF application. This
 - Device activation, online verification and deactivation
 - Ed25519-signed activation payloads including the signed expiry timestamp (null means lifetime)
 - One-time purchase / lifetime-license support without recurring subscription billing
-- Provider-neutral payment ledger for single-purchase transactions, with idempotency and one-license-per-payment constraints
+- Chargily Pay V2 checkout creation for DZD, CIB and EDAHABIA
+- HMAC-SHA256 webhook verification, environment matching and webhook-event deduplication
+- Automatic lifetime-license issuance after verified payment, with encrypted serial recovery and email retry
+- One-time payment ledger with idempotency and one-license-per-payment constraints
 - PostgreSQL/Neon support, Alembic migrations and Render blueprint
 
 ## Local setup
@@ -34,6 +37,17 @@ Run `python scripts/generate_keys.py`. Store the private key only in Render envi
 4. The server consumes the one-time code and returns the signed license payload.
 5. The client verifies the Ed25519 signature locally, checks the signed `expires_at` value (null means a lifetime license), permits up to the configured offline grace period, and performs online rechecks at the configured interval.
 
+## Local payment checkout
+
+- `POST /v1/payments/chargily/checkout` creates a server-priced DZD checkout. The caller supplies an `Idempotency-Key` header and an email/payment method/locale body; the amount is never accepted from the client.
+- The API returns the hosted `checkout_url`. Supported methods are `edahabia`, `cib`, and `chargily_app`.
+- `POST /v1/payments/chargily/webhook` verifies the raw-body HMAC-SHA256 signature and the test/live environment before marking a payment paid.
+- A paid webhook issues one permanent license and emails its serial. The serial is encrypted at rest so an administrator can retry delivery using `POST /v1/admin/payments/{payment_id}/resend-license`.
+- `GET /v1/payments/{payment_id}` returns payment and delivery status only; it never returns the license serial.
+- Checkout success/failure return pages are informational only. A browser redirect is never treated as proof of payment.
+
+Required environment settings: `CHARGILY_API_SECRET_KEY`, `CHARGILY_MODE` (`test` or `live`), `WARAKA_PRICE_DZD` (must be set to the approved selling price), `PUBLIC_BASE_URL` (the HTTPS Render service URL), and `LICENSE_SERIAL_ENCRYPTION_KEY`. Generate the latter with `python scripts/generate_serial_encryption_key.py`.
+
 Lifetime licenses are issued with `expires_at: null`; this means a single purchase with no recurring renewal. The three-device limit and online/offline security checks still apply.
 
 Other client endpoints:
@@ -48,4 +62,4 @@ POST `/v1/admin/licenses` with header `X-Admin-API-Key` and body `{"email":"cust
 Create a Neon PostgreSQL database, connect its URL to Render as `DATABASE_URL`, then configure `ADMIN_API_KEY`, `OTP_SECRET`, Ed25519 keys and SMTP credentials in Render. The Render start command applies Alembic migrations before starting the API.
 
 ## Production release gates
-A live API still requires Neon and Render resources and working SMTP credentials. The payment ledger is only the database foundation; no live payment gateway or verified webhook is connected yet. The Windows client still requires activation UI, a stable device fingerprint, embedded public-key signature verification and tested 14-day offline grace logic. Do not distribute a production build until these are implemented and tested.
+A production payment release still requires a verified Chargily merchant account and application, live API credentials, the approved selling price, a public HTTPS API URL, Neon/Render deployment, and working SMTP credentials. Test Mode must be completed before Live Mode is enabled. International card payments are not included in this local Chargily integration. The Windows client still requires activation UI, a stable device fingerprint, embedded public-key signature verification and tested 14-day offline grace logic. Do not distribute a production build until these are implemented and tested.
