@@ -55,5 +55,4 @@ def downgrade():
     op.drop_table("devices")
     op.drop_index("ix_licenses_email", table_name="licenses")
     op.drop_index("ix_licenses_serial_hash", table_name="licenses")
-    op.drop_table("devices")
     op.drop_table("licenses")
