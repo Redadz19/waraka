@@ -34,7 +34,10 @@ def _private_key() -> Ed25519PrivateKey:
 
 
 def sign_payload(payload: bytes) -> str:
-    return base64.b64encode(_private_key().sign(payload)).decode("ascii")
+    key = _private_key()
+    # Fail closed if an explicitly configured public key does not match.
+    public_key_b64()
+    return base64.b64encode(key.sign(payload)).decode("ascii")
 
 
 def public_key_b64() -> str:
