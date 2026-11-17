@@ -40,6 +40,16 @@ def create_license(body: LicenseCreate, x_admin_api_key: str | None = Header(def
     db.add(lic); db.commit()
     return {"id":lic.id,"serial":serial,"email":lic.email,"expires_at":lic.expires_at}
 
+@app.post("/v1/admin/licenses/{license_id}/revoke")
+def revoke_license(license_id: str, x_admin_api_key: str | None = Header(default=None), db: Session = Depends(get_db)):
+    admin_guard(x_admin_api_key)
+    lic = db.get(License, license_id)
+    if not lic:
+        raise HTTPException(404, "License not found")
+    lic.active = False
+    db.commit()
+    return {"revoked": True, "license_id": lic.id}
+
 @app.post("/v1/otp/request")
 def request_otp(body: OTPRequest, db: Session = Depends(get_db)):
     now = utcnow()
