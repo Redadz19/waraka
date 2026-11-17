@@ -341,7 +341,23 @@ def create_chargily_checkout(
         status="pending",
     )
     db.add(payment)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = db.scalar(
+            select(Payment).where(Payment.idempotency_key == key_hash)
+        )
+        if concurrent and concurrent.customer_email == email and concurrent.amount_dzd == settings.waraka_price_dzd and concurrent.checkout_url:
+            return {
+                "payment_id": concurrent.id,
+                "status": concurrent.status,
+                "checkout_url": concurrent.checkout_url,
+                "amount": concurrent.amount_dzd,
+                "currency": "dzd",
+                "reused": True,
+            }
+        raise HTTPException(409, "A purchase with this idempotency key is already being processed")
     db.refresh(payment)
 
     base_url = _public_base_url()
@@ -388,6 +404,10 @@ def create_chargily_checkout(
         db.commit()
         raise HTTPException(502, "Payment gateway returned an invalid response") from exc
 
+    if not isinstance(checkout, dict):
+        payment.provider_metadata = {"request_state": "invalid_gateway_response"}
+        db.commit()
+        raise HTTPException(502, "Payment gateway returned an invalid response")
     checkout_id = checkout.get("id")
     checkout_url = checkout.get("checkout_url")
     checkout_host = urlparse(checkout_url).hostname if isinstance(checkout_url, str) else None
@@ -403,8 +423,11 @@ def create_chargily_checkout(
         or not checkout_host
         or not (checkout_host == "chargily.dz" or checkout_host.endswith(".chargily.dz")
                 or checkout_host == "chargily.net" or checkout_host.endswith(".chargily.net"))
+        or type(checkout.get("amount")) is not int
         or checkout.get("amount") != payment.amount_dzd
         or str(checkout.get("currency", "")).lower() != "dzd"
+        or checkout.get("entity") != "checkout"
+        or checkout.get("status") != "pending"
         or actual_live is not expected_live
     ):
         payment.status = "failed"
