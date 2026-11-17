@@ -30,3 +30,7 @@ services:
         sync: false
       - key: SMTP_FROM
         sync: false
+      - key: OFFLINE_GRACE_DAYS
+        value: "14"
+      - key: RECHECK_DAYS
+        value: "7"
